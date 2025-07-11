@@ -1,18 +1,16 @@
-import cloudscraper
-from xml.etree import ElementTree
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from transformers import pipeline
 from telegram import Bot
-from datetime import datetime
+from collections import defaultdict
 
-# تنظیمات تلگرام
+# ───── تنظیمات ربات تلگرام ─────
 TELEGRAM_TOKEN = "7685197740:AAHLS3TBygS_PBeEobf9fyYKQy6M5rANl6s"
 TELEGRAM_CHAT_ID = "-1002764995883"
 
-# مدل FinBERT
-sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
-
-# لیست RSS کانال‌ها
-RSS_URLS = [
+# ───── لیست RSS کانال‌ها ─────
+RSS_FEEDS = [
     "https://rsshub.app/telegram/channel/fxfactoryfarsi",
     "https://rsshub.app/telegram/channel/UtoFx",
     "https://rsshub.app/telegram/channel/xnewsforex",
@@ -31,99 +29,136 @@ RSS_URLS = [
     "https://rsshub.app/telegram/channel/forexlive"
 ]
 
-# کلمات کلیدی جفت ارز
-CURRENCY_KEYWORDS = {
-    "EUR/USD": ["eur", "euro", "ecb"],
-    "USD/JPY": ["jpy", "yen", "boj"],
-    "GBP/USD": ["gbp", "pound", "boe"],
-    "USD/CHF": ["chf", "swiss", "franc"],
-    "AUD/USD": ["aud", "australian", "rba"],
-    "USD/CAD": ["cad", "canadian", "boc"],
-}
+# ───── مدل FinBERT ─────
+sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
 
-# کلیدواژه‌های پایدار
-STABLE_KEYWORDS = ["interest rate", "inflation", "central bank", "policy", "GDP", "unemployment", "ecb", "fed", "boj"]
+# ───── دریافت تیترهای امروز ─────
+def get_today_rss_headlines(url):
+    headlines = []
+    try:
+        response = requests.get(url, timeout=10)
+        root = ET.fromstring(response.content)
+        now = datetime.now(timezone.utc)
+        today = now.date()
 
-def fetch_rss_titles():
-    scraper = cloudscraper.create_scraper()
-    titles = []
-    for url in RSS_URLS:
+        for item in root.findall(".//item"):
+            title = item.find("title").text.strip()
+            link = item.find("link").text.strip()
+            pub_date_tag = item.find("pubDate")
+            if pub_date_tag is None:
+                continue
+
+            try:
+                pub_date = datetime.strptime(pub_date_tag.text, "%a, %d %b %Y %H:%M:%S %Z")
+                pub_date = pub_date.replace(tzinfo=timezone.utc)
+            except:
+                continue
+
+            if pub_date.date() == today and pub_date <= now:
+                headlines.append((title, link))
+    except Exception as e:
+        print(f"⚠️ خطا در دریافت {url}: {e}")
+    return headlines
+
+# ───── تشخیص پایداری خبر ─────
+def classify_sentiment_type(title):
+    keywords = ["interest rate", "inflation", "central bank", "monetary policy", "GDP", "unemployment", "ECB", "Fed", "BOJ"]
+    for k in keywords:
+        if k.lower() in title.lower():
+            return "پایدار"
+    return "موقتی"
+
+# ───── تشخیص جفت‌ارز از تیتر ─────
+def extract_currency_pairs(title, sentiment_label):
+    pairs_map = {
+        "EUR/USD": ["euro", "eur", "ecb"],
+        "USD/JPY": ["yen", "jpy", "boj"],
+        "GBP/USD": ["pound", "gbp", "boe"],
+        "USD/CHF": ["swiss", "franc", "chf"],
+        "AUD/USD": ["australian", "aud", "rba"],
+        "USD/CAD": ["canadian", "cad", "boc"]
+    }
+
+    found = []
+    for pair, keywords in pairs_map.items():
+        for k in keywords:
+            if k.lower() in title.lower():
+                found.append((pair, sentiment_label))
+                break
+    return found
+
+# ───── تحلیل کلی تیترها ─────
+def analyze_all(headlines):
+    labels = {"positive": 0, "negative": 0, "neutral": 0}
+    currency_stats = defaultdict(lambda: {"count": 0, "type": ""})
+
+    for title, _ in headlines:
         try:
-            res = scraper.get(url, timeout=10)
-            root = ElementTree.fromstring(res.text)
-            for item in root.findall(".//item"):
-                title = item.find("title").text.strip()
-                titles.append(title)
-        except Exception as e:
-            print(f"خطا در دریافت RSS {url}: {e}")
-    return titles
+            result = sentiment_pipeline(title)[0]
+            label = result["label"].lower()
+        except:
+            label = "neutral"
 
-def analyze_sentiment(texts):
-    return sentiment_pipeline(texts, truncation=True)
+        labels[label] += 1
+        sentiment_type = classify_sentiment_type(title)
+        pairs = extract_currency_pairs(title, label)
 
-def classify_sentiment(results):
-    counter = {"positive": 0, "neutral": 0, "negative": 0}
-    for r in results:
-        label = r['label'].lower()
-        if label in counter:
-            counter[label] += 1
-    total = sum(counter.values())
-    top = max(counter, key=counter.get)
-    mood = {"positive": "صعودی ✅", "negative": "نزولی ❌", "neutral": "دارایی های امن ⚪️"}.get(top, "نامشخص ❓")
-    return mood, total
+        for pair, lbl in pairs:
+            currency_stats[pair]["count"] += 1
+            currency_stats[pair]["type"] = sentiment_type
 
-def extract_currency_impact(titles, results):
-    impact = {}
-    for title, sentiment in zip(titles, results):
-        text = title.lower()
-        label = sentiment["label"].lower()
-        type_ = "پایدار" if any(k in text for k in STABLE_KEYWORDS) else "موقتی"
-        for pair, keys in CURRENCY_KEYWORDS.items():
-            if any(k in text for k in keys):
-                if pair not in impact:
-                    impact[pair] = {"positive": 0, "negative": 0, "neutral": 0, "type": type_}
-                impact[pair][label] += 1
-    summary = []
-    for pair, data in impact.items():
-        total = sum(data.values()) - (1 if "type" in data else 0)
-        main = max(["positive", "negative", "neutral"], key=lambda x: data[x])
-        sign = {"positive": "⏫", "negative": "⏬", "neutral": "⚪️"}[main]
-        percent = int((data[main] / total) * 100) if total else 0
-        summary.append(f"{pair} {sign} {data['type']} {percent}%")
-    return summary
+    return labels, currency_stats
 
-def build_message(titles, sentiments):
+# ───── ساخت پیام نهایی برای تلگرام ─────
+def build_message(headlines, labels, currency_stats):
+    total = sum(labels.values())
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    title = titles[0] if titles else "عنوانی یافت نشد"
-    mood, total = classify_sentiment(sentiments)
-    pairs = extract_currency_impact(titles, sentiments)
-    return f"""⏰ تایم اخبار: {now}
 
-📰 عنوان: {title}
+    if labels["positive"] > labels["negative"]:
+        overall = "صعودی ✅"
+    elif labels["negative"] > labels["positive"]:
+        overall = "نزولی ❌"
+    else:
+        overall = "خنثی ⚪️"
 
-📄 تعداد خبرهای تحلیل شده: {total}
+    message = f"""🗓 تایم اخبار: ⏰ {now}
 
-📊 احساس سرمایه گذارها و تریدرها نسبت به بازار: {mood}
+📰 تعداد خبرهای تحلیل‌شده: {total}
 
-📈 جفت‌ارزهای تحت‌تأثیر و نوع سنتیمنت و درصد تأثیر:
-{chr(10).join(pairs)}
+📊 احساس سرمایه‌گذاران نسبت به بازار: {overall}
 
-📡 تحلیل اتوماتیک با هوش مصنوعی | بروزرسانی هر ۳۰ دقیقه"""
+📈 جفت‌ارزهای تحت‌تأثیر:"""
 
+    for pair, data in currency_stats.items():
+        direction = "⏫" if labels["positive"] > labels["negative"] else "⏬"
+        percent = round((data["count"] / total) * 100)
+        message += f"\n{pair} {direction}{data['type']} {percent}%"
+
+    message += "\n\n📡 تحلیل اتوماتیک با FinBERT"
+    return message
+
+# ───── ارسال پیام به تلگرام ─────
 def send_telegram_message(text):
     try:
-        Bot(token=TELEGRAM_TOKEN).send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+        bot = Bot(token=TELEGRAM_TOKEN)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
     except Exception as e:
-        print("خطا در ارسال پیام:", e)
+        print("❌ خطا در ارسال پیام:", e)
 
+# ───── اجرای اصلی ─────
 def main():
-    titles = fetch_rss_titles()
-    if not titles:
-        send_telegram_message("⛔️ خبری برای تحلیل یافت نشد.")
+    all_headlines = []
+    for url in RSS_FEEDS:
+        all_headlines += get_today_rss_headlines(url)
+
+    if not all_headlines:
+        send_telegram_message("❗️هیچ خبری برای تحلیل امروز یافت نشد.")
         return
-    sentiments = analyze_sentiment(titles)
-    message = build_message(titles, sentiments)
+
+    labels, stats = analyze_all(all_headlines)
+    message = build_message(all_headlines, labels, stats)
     send_telegram_message(message)
 
 if __name__ == "__main__":
     main()
+
