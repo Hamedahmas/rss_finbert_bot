@@ -1,0 +1,5 @@
+cloudscraper
+transformers
+torch
+python-telegram-bot==13.15
+beautifulsoup4
