@@ -8,7 +8,6 @@ on:
 jobs:
   sentiment-analysis:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -16,10 +15,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: "3.10"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run analysis
         run: python main.py
+
+
+# requirements.txt
+transformers
+torch
+requests
+python-telegram-bot==13.15
+feedparser
