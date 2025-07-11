@@ -2,7 +2,7 @@
 from transformers import pipeline
 from telegram import Bot
 from datetime import datetime
-from utils import fetch_rss_entries, is_today
+from utils import fetch_rss_entries_from_list, is_today
 
 # تنظیمات تلگرام
 TELEGRAM_TOKEN = "7685197740:AAHLS3TBygS_PBeEobf9fyYKQy6M5rANl6s"
@@ -88,9 +88,7 @@ def send_telegram(text):
         print("خطا در ارسال:", e)
 
 def main():
-    all_entries = []
-    for url in RSS_FEED_URLS:
-        all_entries += fetch_rss_entries(url)
+    all_entries = fetch_rss_entries_from_list(RSS_FEED_URLS)
 
     if not all_entries:
         send_telegram("⛔️ هیچ خبری دریافت نشد.")
