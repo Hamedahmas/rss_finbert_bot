@@ -1,12 +1,15 @@
+# main.py
 from transformers import pipeline
 from telegram import Bot
 from datetime import datetime
-from utils import get_rss_entries, is_today
+from utils import fetch_rss_entries, is_today
 
+# تنظیمات تلگرام
 TELEGRAM_TOKEN = "7685197740:AAHLS3TBygS_PBeEobf9fyYKQy6M5rANl6s"
 TELEGRAM_CHAT_ID = "-1002764995883"
 
-RSS_FEEDS = [
+# لیست فیدهای RSS از کانال‌های تلگرام (RSSHub)
+RSS_FEED_URLS = [
     "https://rsshub.app/telegram/channel/fxfactoryfarsi",
     "https://rsshub.app/telegram/channel/UtoFx",
     "https://rsshub.app/telegram/channel/xnewsforex",
@@ -25,99 +28,79 @@ RSS_FEEDS = [
     "https://rsshub.app/telegram/channel/forexlive"
 ]
 
+# مدل تحلیل احساسات
 sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
 
-def extract_currency_info(title):
-    pairs = {
-        "EUR/USD": ["eur", "euro", "ecb"],
-        "USD/JPY": ["jpy", "yen", "boj"],
-        "GBP/USD": ["gbp", "pound", "boe"],
-        "USD/CHF": ["chf", "franc"],
-        "AUD/USD": ["aud", "australian", "rba"],
-        "USD/CAD": ["cad", "canadian", "boc"]
-    }
-    result = []
-    for pair, keys in pairs.items():
-        for key in keys:
-            if key in title.lower():
-                result.append(pair)
-                break
-    return result
-
 def classify_type(title):
-    keywords = ["central bank", "interest", "inflation", "policy", "unemployment"]
-    for word in keywords:
-        if word in title.lower():
-            return "پایدار"
-    return "موقتی"
+    keywords = ["rate", "inflation", "central bank", "policy", "interest"]
+    return "پایدار" if any(k in title.lower() for k in keywords) else "موقتی"
 
 def infer_market(sentiments):
-    positive = sum(1 for s in sentiments if s == "positive")
-    negative = sum(1 for s in sentiments if s == "negative")
-    if positive > negative:
+    pos = sentiments.count("positive")
+    neg = sentiments.count("negative")
+    if pos > neg:
         return "ریسک‌پذیر ✅"
-    elif negative > positive:
+    elif neg > pos:
         return "ریسک‌گریز ❌"
-    else:
-        return "متعادل ⚪️"
+    return "متعادل ⚪️"
 
-def analyze(entries, title_prefix):
+def analyze(entries, label):
     sentiments = []
-    currency_stats = {}
+    type_counts = {"پایدار": 0, "موقتی": 0}
+    titles = []
 
     for item in entries:
         title = item["title"]
         result = sentiment_pipeline(title)[0]
-        label = result["label"].lower()
-        sentiments.append(label)
-
-        for pair in extract_currency_info(title):
-            if pair not in currency_stats:
-                currency_stats[pair] = {"positive": 0, "negative": 0, "type": classify_type(title)}
-            currency_stats[pair][label] += 1
+        label_ = result["label"].lower()
+        sentiments.append(label_)
+        type_ = classify_type(title)
+        type_counts[type_] += 1
+        titles.append(title)
 
     market_mood = infer_market(sentiments)
     total = len(sentiments)
 
-    currencies_output = ""
-    for pair, data in currency_stats.items():
-        total_pair = data["positive"] + data["negative"]
-        direction = "⏫" if data["positive"] > data["negative"] else "⏬"
-        percent = round((max(data["positive"], data["negative"]) / total_pair) * 100)
-        type_ = data["type"]
-        currencies_output += f"{pair}{direction}{type_} {percent}%   "
+    major = type_counts["پایدار"]
+    minor = type_counts["موقتی"]
+    total_types = major + minor
+    major_pct = round((major / total_types) * 100) if total_types else 0
+    minor_pct = 100 - major_pct
 
-    titles_list = [e["title"] for e in entries[:3]]
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    sample_titles = " ؛ ".join(titles[:3])
 
     return f"""
-📌 {title_prefix}
-⏰ تایم تحلیل: {now_str}
-📰 عناوین نمونه: {' ؛ '.join(titles_list)}
+📌 {label}
+⏰ تایم تحلیل: {now}
+📰 نمونه عناوین: {sample_titles}
 📄 تعداد خبرهای تحلیل‌شده: {total}
 📊 احساس سرمایه‌گذاران: {market_mood}
-📈 جفت‌ارزهای تأثیرگرفته: {currencies_output}
-📡 تحلیل با مدل FinBERT
+📈 نوع جفت‌ارزهای تحت تأثیر: جفت ارزهای پایدار {major_pct}% ؛ موقتی {minor_pct}%
+📡 تحلیل با FinBERT
 """
 
 def send_telegram(text):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+    except Exception as e:
+        print("خطا در ارسال:", e)
 
 def main():
-    entries = get_rss_entries(RSS_FEEDS)
+    all_entries = []
+    for url in RSS_FEED_URLS:
+        all_entries += fetch_rss_entries(url)
 
-    if not entries:
+    if not all_entries:
         send_telegram("⛔️ هیچ خبری دریافت نشد.")
         return
 
-    all_message = analyze(entries, "🟢 تحلیل کلی (تمامی اخبار)")
-    send_telegram(all_message)
+    send_telegram(analyze(all_entries, "🟢 تحلیل کلی (تمامی اخبار)"))
 
-    today_entries = [e for e in entries if is_today(e.get("published", ""))]
+    today_entries = [e for e in all_entries if is_today(e["published"])]
     if today_entries:
-        today_message = analyze(today_entries, "🔵 تحلیل خبرهای امروز")
-        send_telegram(today_message)
+        send_telegram(analyze(today_entries, "🔵 تحلیل خبرهای امروز"))
     else:
         send_telegram("❗️هیچ خبری برای امروز یافت نشد.")
 
