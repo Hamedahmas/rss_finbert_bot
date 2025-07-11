@@ -17,6 +17,15 @@ def fetch_rss_entries(url):
         print("RSS error:", e)
     return entries
 
+def fetch_rss_entries_from_list(urls):
+    all_entries = []
+    for url in urls:
+        try:
+            all_entries.extend(fetch_rss_entries(url))
+        except Exception as e:
+            print(f"خطا در پردازش {url}: {e}")
+    return all_entries
+
 def is_today(pub_date):
     try:
         pub_dt = datetime(*email.utils.parsedate(pub_date)[:6], tzinfo=timezone.utc)
