@@ -1,26 +1,25 @@
+# utils.py
 import feedparser
-from datetime import datetime, timezone
 import email.utils
+from datetime import datetime, timezone
 
-def get_rss_entries(rss_urls):
+def fetch_rss_entries(url):
     entries = []
-    for url in rss_urls:
-        try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries:
-                entries.append({
-                    "title": entry.title,
-                    "link": entry.link,
-                    "published": entry.get("published", ""),
-                })
-        except Exception as e:
-            print(f"خطا در پردازش {url}: {e}")
+    try:
+        feed = feedparser.parse(url)
+        for item in feed.entries:
+            entries.append({
+                "title": item.title,
+                "link": item.link,
+                "published": item.get("published", "")
+            })
+    except Exception as e:
+        print("RSS error:", e)
     return entries
 
 def is_today(pub_date):
     try:
         pub_dt = datetime(*email.utils.parsedate(pub_date)[:6], tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        return pub_dt.date() == now.date()
+        return pub_dt.date() == datetime.now(timezone.utc).date()
     except:
         return False
